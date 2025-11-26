@@ -1,0 +1,2 @@
+This program captures video frames from a Raspberry Pi camera using the Picamera2 library, and streams the frames to a specified server. It sends each frame as a JPEG image to the server at a specific framerate via HTTP POST requests. The frames are uploaded to the server's /upload endpoint.
+Desired framerate can be set according to network capacity, 1 framerate is sufficient for  detecting number of people realtime.

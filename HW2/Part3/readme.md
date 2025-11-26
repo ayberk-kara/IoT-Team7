@@ -1,0 +1,1 @@
+This program implements simple perceptron class to train logic gates: OR, NAND, and AND. It trains each perceptron to give the correct output for these gates. After training, it combines them to create an XOR gate. Finally, it shows the results for each gate (OR, NAND, AND, XOR) to check if they work right.

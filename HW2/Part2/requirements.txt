@@ -1,0 +1,5 @@
+numpy
+tensorflow
+scikit-learn
+python-math
+zip_files

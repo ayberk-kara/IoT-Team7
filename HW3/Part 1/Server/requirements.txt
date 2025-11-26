@@ -1,0 +1,7 @@
+Flask
+torch
+pandas
+opencv-python
+Pillow
+Werkzeug
+requests

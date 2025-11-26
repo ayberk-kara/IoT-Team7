@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Fall Detection Dashboard</title>
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <style>
+    #mainContent {
+      display: flex;
+      gap: 20px;
+    }
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    #map {
+      flex: 2;
+      height: 500px;
+      border: 1px solid #ccc;
+    }
+    #info {
+      flex: 1;
+    }
+    #peopleList {
+      list-style-type: none;
+      padding: 0;
+    }
+    #peopleList li {
+      padding: 10px;
+      border-bottom: 1px solid #ccc;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    #peopleList li:hover {
+      background-color: #f0f0f0;
+    }
+    .delete-button {
+      background-color: #ff4d4d;
+      border: none;
+      color: white;
+      padding: 5px 10px;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+    .delete-button:hover {
+      background-color: #ff1a1a;
+    }
+    @keyframes flashingOutline {
+      0% {
+        outline: 2px solid red;
+        box-shadow: 0 0 5px red;
+      }
+      50% {
+        outline: 2px solid transparent;
+        box-shadow: none;
+      }
+      100% {
+        outline: 2px solid red;
+        box-shadow: 0 0 5px red;
+      }
+    }
+    .flashing {
+      display: inline-block;
+      outline: 2px solid red;
+      animation: flashingOutline 1s infinite;
+    }
+    /* Login Form */
+    #loginForm {
+      margin-bottom: 20px;
+    }
+    #loginForm input {
+      padding: 5px;
+      margin-right: 10px;
+    }
+    #loginForm button {
+      padding: 5px 10px;
+    }
+    #loginStatus {
+      margin-left: 10px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <h1>Fall Detection Dashboard</h1>
+
+  <div id="loginForm">
+    <input type="password" id="passkey" placeholder="Passkey" />
+    <button id="authButton">Authenticate</button>
+    <span id="authStatus"></span>
+  </div>
+
+  <!-- Wrapper for map and info -->
+  <div id="mainContent">
+    <!-- People List -->
+    <div id="info">
+      <h2>People</h2>
+      <ul id="peopleList"><!-- dynamic content --></ul>
+    </div>
+
+    <!-- Map Container -->
+    <div id="map"></div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  ></script>
+  <!-- Socket.IO Client -->
+  <script
+    src="https://cdn.socket.io/4.6.1/socket.io.min.js"
+    integrity="sha384-V0ZtcjA0rIQeLZpKK1EBrR24Grg8Xl49A8SLtHnVwZt3q4bJNv7RYcH5psvEJjFQ"
+    crossorigin="anonymous"
+  ></script>
+
+  <script>
+    const markers = {};
+
+    // Authorization variables
+    let authName = null;
+    let authToken = null;
+    let isAuthorized = false;
+    let mapRef = null;
+    let authPasskey = null
+
+    // -----------------------------
+    // 4) Check auth.txt
+    // -----------------------------
+    const authButton = document.getElementById('authButton');
+    const authStatus = document.getElementById('authStatus');
+
+    if (authButton.disabled) {
+      alert("ERROR: loginButton element not found. Check the ID in your HTML.");
+    } else {
+      authButton.onclick = () => {
+
+        const passkey = document.getElementById('passkey').value.trim();
+        if (!passkey) {
+          authStatus.textContent = 'Please passkey.';
+          authStatus.style.color = 'red';
+          return;
+        }
+
+        // POST /login to check credentials
+        fetch('/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ passkey })
+        })
+        .then(res => {
+          if (res.ok) {
+            return res.json();
+          } else if (res.status === 403) {
+            authStatus.textContent = 'Invalid passkey.';
+            authStatus.style.color = 'red';
+            throw new Error('Invalid passkey (403)');
+          } else {
+            authStatus.textContent = 'Login error.';
+            authStatus.style.color = 'red';
+            throw new Error('Login error => status=' + res.status);
+          }
+        })
+        .then(json => {
+          authStatus.textContent = 'Success!';
+          authStatus.style.color = 'green';
+
+          // Save the credentials so we can delete if needed
+          authPasskey = passkey;
+          isAuthorized = true;
+
+          // Show delete buttons if people exist
+          updateDeleteButtonsVisibility();
+        })
+        .catch(err => {
+          console.error("DEBUG: Error during login:", err);
+        });
+      };
+    }
+
+    // -----------------------------
+    // 1) Initialize the Leaflet map
+    // -----------------------------
+    function initMap() {
+      const map = L.map('map').setView([40.891756, 29.383091], 18);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap contributors'
+      }).addTo(map);
+      return map;
+    }
+
+    // -----------------------------
+    // 2) Keep fetching /getinfo
+    // -----------------------------
+    function getInfo() {
+      fetch('/getinfo', {
+        method: 'GET',
+        headers: { 'passkey': authPasskey },
+      })
+        .then(res => {
+          if (!res.ok) {
+            authStatus.textContent = 'Please enter passkey to access information.';
+            authStatus.style.color = 'red';
+            throw new Error('Authorization failed');
+          }
+          return res.json();
+        })
+        .then(data => {
+          for (const personName in data) {
+            const { latitude, longitude, battery_level, floor, help } = data[personName];
+            addOrUpdatePersonListItem(personName, battery_level, latitude, longitude, floor, help);
+            if (latitude != null && longitude != null) {
+              if (markers[personName]) {
+                markers[personName].setLatLng([latitude, longitude]);
+                markers[personName].setPopupContent(`
+                  <b>${personName}</b><br>
+                  Battery: ${battery_level}%<br>
+                  ${battery_level < 20 ? "<span style='color:red;'>Low Battery!</span>" : ""}
+                `);
+              } else {
+                const marker = L.marker([latitude, longitude]).addTo(mapRef);
+                marker.bindPopup(`
+                  <b>${personName}</b><br>
+                  Battery: ${battery_level}%<br>
+                  ${battery_level < 20 ? "<span style='color:red;'>Low Battery!</span>" : ""}
+                `);
+                markers[personName] = marker;
+              }
+            }
+          }
+        })
+        .catch(err => {
+          console.error("DEBUG: Error fetching /getinfo:", err);
+        });
+    }
+
+    window.addEventListener('load', () => {
+      mapRef = initMap();
+      setInterval(getInfo, 2000);
+    });
+
+    // -----------------------------
+    // 3) Socket.IO for real-time updates
+    // -----------------------------
+    console.log("DEBUG: Attempting Socket.IO connection to the current server");
+    const socket = io(); // Connect to the same host and port that served the page
+
+    socket.on('connect', () => {
+      console.log("DEBUG: Socket.IO connected");
+    });
+
+    socket.on('connection_response', data => {
+      console.log("DEBUG: connection_response =>", data.message);
+    });
+
+    // If someone is deleted
+    socket.on('person_deleted', data => {
+      console.log("DEBUG: person_deleted event received:", data);
+      const { person } = data;
+      removePersonListItem(person);
+      if (markers[person]) {
+        mapRef.removeLayer(markers[person]);
+        delete markers[person];
+      }
+    });
+
+    socket.on('disconnect', () => {
+      console.log("DEBUG: Socket.IO disconnected");
+    });
+
+
+    // -----------------------------
+    // 5) Manage People List
+    // -----------------------------
+    function addOrUpdatePersonListItem(person, battery_level, latitude, longitude, floor, help) {
+
+      const peopleList = document.getElementById('peopleList');
+      const sanitizedPerson = person.replace(/\s+/g, '_');
+      let personItem = document.getElementById(`person-${sanitizedPerson}`);
+
+      if (!personItem) {
+        personItem = document.createElement('li');
+        personItem.id = `person-${sanitizedPerson}`;
+        peopleList.appendChild(personItem);
+      }
+
+      const latText = (latitude != null) ? latitude : '';
+      const lonText = (longitude != null) ? longitude : '';
+      const batteryText = (battery_level != null) ? battery_level : '';
+      const floorText = (floor != null) ? floor : '';
+      const helpText = (help == true) ? "This person needs help!" : '';
+
+      personItem.innerHTML = `
+        <span>
+          <strong>${person}</strong><br>
+          Battery: ${batteryText}%<br>
+          Location: (${latText}, ${lonText})<br>
+          Floor: ${floorText}<br>
+          <strong>${helpText}</strong>
+        </span>
+      `;
+      if (help == true){ personItem.className = "flashing"; }
+
+      // On click, center map if marker
+      personItem.onclick = () => {
+        console.log("DEBUG: Clicked on person:", person);
+        if (markers[person]) {
+          mapRef.setView(markers[person].getLatLng(), 18);
+          markers[person].openPopup();
+        }
+      };
+
+      // If authorized, add a "Delete" button
+      if (isAuthorized) {
+        const existingButton = personItem.querySelector('.delete-button');
+        if (existingButton) {
+          existingButton.remove();
+        }
+        const deleteButton = document.createElement('button');
+        deleteButton.textContent = 'Delete';
+        deleteButton.classList.add('delete-button');
+        deleteButton.onclick = (event) => {
+          event.stopPropagation();
+          deletePerson(person);
+        };
+        personItem.appendChild(deleteButton);
+      }
+    }
+
+    function removePersonListItem(person) {
+      console.log("DEBUG: Removing person:", person);
+      const sanitizedPerson = person.replace(/\s+/g, '_');
+      const personItem = document.getElementById(`person-${sanitizedPerson}`);
+      if (personItem) {
+        personItem.remove();
+      }
+    }
+
+    // -----------------------------
+    // 6) Delete a person if authorized
+    // -----------------------------
+    function deletePerson(person) {
+
+      if (!confirm(`Are you sure you want to delete ${person}?`)) {
+        return;
+      }
+
+      fetch(`/delete/${encodeURIComponent(person)}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'passkey': authPasskey,
+        }
+      })
+      .then(response => {
+        console.log(`DEBUG: /delete response status: ${response.status}`);
+        if (response.ok) {
+          console.log(`DEBUG: Successfully deleted ${person}`);
+          removePersonListItem(person);
+          if (markers[person]) {
+            mapRef.removeLayer(markers[person]);
+            delete markers[person];
+          }
+          alert(`${person} has been removed.`);
+        } else if (response.status === 403) {
+          alert('You are not authorized to perform this action.');
+        } else if (response.status === 404) {
+          alert('Person not found.');
+        } else {
+          alert('Failed to delete the person. Please try again.');
+        }
+      })
+      .catch(err => {
+        console.error("DEBUG: Error during deletion:", err);
+        alert('An error occurred while deleting the person.');
+      });
+    }
+
+    // If we log in after the list is rendered, show delete buttons
+    function updateDeleteButtonsVisibility() {
+      if (isAuthorized) {
+        console.log("DEBUG: User is authorized. Updating delete buttons.");
+        const listItems = document.getElementById('peopleList').getElementsByTagName('li');
+        for (let item of listItems) {
+          if (!item.querySelector('.delete-button')) {
+            const personName = item.querySelector('strong').textContent;
+            const deleteButton = document.createElement('button');
+            deleteButton.textContent = 'Delete';
+            deleteButton.classList.add('delete-button');
+            deleteButton.onclick = (event) => {
+              event.stopPropagation();
+              deletePerson(personName);
+            };
+            item.appendChild(deleteButton);
+          }
+        }
+      } else {
+        console.log("DEBUG: User is not authorized. Delete buttons will not be displayed.");
+      }
+    }
+  </script>
+</body>
+</html>
