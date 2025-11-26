@@ -1,8 +1,0 @@
-Flask
-Flask_Cors
-Werkzeug
-numpy
-pandas
-scipy
-tensorflow
-flask_socketio
